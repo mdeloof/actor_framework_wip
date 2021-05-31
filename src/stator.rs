@@ -5,36 +5,49 @@ const MAX_DEPTH: usize = 16;
 
 pub type State<A, E> = fn(&mut A , &E) -> Response<A, E>;
 
-
 pub enum Response<A, E: Event> {
     Handled,
     Parent(State<A, E>),
     Transition(State<A, E>)
 }
 
-#[derive(Clone)]
-pub struct Stator<A, E: Event> {
-    pub state: State<A, E>,
-    pub active_object: A
+
+pub trait Handler<E: Event> {
+
+    fn init(&mut self);
+
+    fn handle(&mut self, event: &E);
+
+    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<E>>);
+
 }
 
-impl<A, E: Event> Stator<A, E> {
 
-    pub fn get_parent_state(&mut self, state: State<A, E>) -> Result<State<A, E>, &str>{
+pub trait Stator<E: Event>: Sized {
+
+    fn get_state(&mut self) -> State<Self, E>;
+
+    fn set_state(&mut self, state: State<Self, E>);
+
+    fn get_event_sender(&mut self) -> &mut Option<mpsc::UnboundedSender<Envelope<E>>>;
+
+    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<E>>);
+
+    fn get_parent_state(&mut self, state: State<Self, E>) -> Result<State<Self, E>, &str> {
         let nop_event = E::get_nop_event();
-        return match state(&mut self.active_object, &nop_event) {
+        return match state(self, &nop_event) {
             Response::Parent(state) => Ok(state),
             _ => Err("root state has no parent state")
         }
     }
 
     fn handle(&mut self, event: &E) {
-        let handler = self.state;
-        self.call_handler(handler, event)
+        let state = self.get_state();
+        self.call_handler(state, event)
     }
 
-    fn call_handler(&mut self, handler: State<A, E>, event: &E) {
-        match handler(&mut self.active_object, event) {
+    fn call_handler(&mut self, handler: State<Self, E>, event: &E) {
+        match handler(self, event) {
             Response::Transition(target_state) => self.transition(target_state),
             Response::Parent(parent_state) => self.call_handler(parent_state, event),
             Response::Handled => ()
@@ -42,9 +55,9 @@ impl<A, E: Event> Stator<A, E> {
     }
 
     fn init(&mut self) {
-        let mut entry_path: Vec<State<A,E>> = Vec::with_capacity(MAX_DEPTH);
+        let mut entry_path: Vec<State<Self, E>> = Vec::with_capacity(MAX_DEPTH);
 
-        let mut entry_temp = self.state;
+        let mut entry_temp = self.get_state();
 
         // Get the path from the initial state to the root state
         for i in 0..(MAX_DEPTH + 1) {
@@ -60,10 +73,10 @@ impl<A, E: Event> Stator<A, E> {
         }
     }
 
-    fn transition(&mut self, target: State<A, E>) {
-        let mut exit_path: Vec<State<A,E>> = Vec::with_capacity(MAX_DEPTH);
-        let mut entry_path: Vec<State<A,E>> = Vec::with_capacity(MAX_DEPTH);
-        let source = self.state;
+    fn transition(&mut self, target: State<Self, E>) {
+        let mut exit_path: Vec<State<Self, E>> = Vec::with_capacity(MAX_DEPTH);
+        let mut entry_path: Vec<State<Self, E>> = Vec::with_capacity(MAX_DEPTH);
+        let source = self.get_state();
 
         let mut exit_temp = source;
         let mut entry_temp = target;
@@ -124,7 +137,7 @@ impl<A, E: Event> Stator<A, E> {
         // Execute the exit path out of the source state
         let exit_event = E::get_exit_event();
         for exit_state in exit_path.into_iter() {
-            match exit_state(&mut self.active_object, &exit_event) {
+            match exit_state(self, &exit_event) {
                 Response::Handled => {},
                 Response::Transition(_) => panic!(
                     "Do not perform transition on exit event."),
@@ -135,50 +148,23 @@ impl<A, E: Event> Stator<A, E> {
         // Execute the entry path into the target state
         let entry_event = E::get_entry_event();
         for entry_state in entry_path.into_iter().rev() {
-            match entry_state(&mut self.active_object, &entry_event) {
+            match entry_state(self, &entry_event) {
                 Response::Handled => {},
                 Response::Transition(_) => panic!(
                     "Do not perform transition on entry event."),
                 _ => {}
             }
         }
-        
-        self.state = target;
-
-    }
-}
-
-impl<A, E: Event> Handler<E> for Stator<A, E> {
-
-    fn init(&mut self) {
-        self.init();
+        self.set_state(target);
     }
 
-    fn handle(&mut self, event: &E) {
-        self.handle(event);
+    fn publish(&mut self, event: E) {
+        if let Some(event_sender) = self.get_event_sender() {
+            let envelope = Envelope {
+                destination: Destination::All,
+                event: event
+            };
+            event_sender.unbounded_send(envelope).unwrap(); 
+        }
     }
-
-}
-
-pub trait Emitter<E: Event> {
-
-    fn get_sender(&mut self) -> &mut mpsc::UnboundedSender<E>;
-    
-    fn emit(&mut self, event: E ) {
-        let sender = self.get_sender();
-        sender.unbounded_send(event).unwrap();
-    }
-
-    fn set_sender(&mut self, sender: mpsc::UnboundedSender<E>) {
-        *self.get_sender() = sender;
-    }
-
-}
-
-pub trait Handler<E: Event> {
-
-    fn init(&mut self);
-
-    fn handle(&mut self, event: &E);
-
 }

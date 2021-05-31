@@ -28,8 +28,44 @@ impl Event for MyEvent {
 }
 
 pub struct Led {
-    pub event_sender: mpsc::UnboundedSender<MyEvent>,
+    pub state: State<Self, MyEvent>,
+    pub event_sender: Option<mpsc::UnboundedSender<Envelope<MyEvent>>>,
     pub light: bool
+}
+
+impl Handler<MyEvent> for Led {
+    
+    fn init(&mut self) {
+        Stator::init(self);
+    }
+
+    fn handle(&mut self, event: &MyEvent) {
+        Stator::handle(self, event);
+    }
+
+    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<MyEvent>>) {
+        Stator::set_event_sender(self, event_sender);
+    }
+}
+
+impl Stator<MyEvent> for Led {
+
+    fn get_state(&mut self) -> State<Self, MyEvent> {
+        self.state
+    }
+
+    fn set_state(&mut self, state: State<Self, MyEvent>) {
+        self.state = state
+    }
+
+    fn get_event_sender(&mut self) -> &mut Option<mpsc::UnboundedSender<Envelope<MyEvent>>> {
+        &mut self.event_sender
+    }
+
+    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<MyEvent>>) {
+        self.event_sender = Some(event_sender);
+    }
+
 }
 
 impl Led {
@@ -39,7 +75,7 @@ impl Led {
         match event {
             MyEvent::Buttonpress => {
                 println!("Cool");
-                self.emit(MyEvent::Buttonpress);
+                self.publish(MyEvent::Buttonpress);
                 Response::Transition(Self::off)
             }
             _ => Response::Handled
@@ -51,7 +87,7 @@ impl Led {
         match event {
             MyEvent::Buttonpress => {
                 println!("Waauw");
-                self.emit(MyEvent::Buttonpress);
+                self.publish(MyEvent::Buttonpress);
                 Response::Transition(Self::on)
             }
             _ => Response::Handled
@@ -59,35 +95,23 @@ impl Led {
     }
 }
 
-impl Emitter<MyEvent> for Led {
 
-    fn get_sender(&mut self) -> &mut mpsc::UnboundedSender<MyEvent> {
-        &mut self.event_sender
-    }
-
-}
 
 fn main () {
 
-    let (sender, receiver) = mpsc::unbounded::<MyEvent>();
+    
 
-    let led_object = Led {
-        event_sender: sender.clone(),
+    let led = Led {
+        state: Led::off,
+        event_sender: None,
         light: true
     };
 
-    let mut led = Stator {
-        state: Led::on,
-        active_object: led_object
-    };
+    let mut commutator = Commutator::new();
+    commutator.add_handler(Box::new(led));
 
-    let mut commutator = Commutator {
-        event_receiver: receiver,
-        event_sender: sender,
-        handlers: vec![&mut led]
-    };
+    commutator.publish(MyEvent::Buttonpress);
 
-    commutator.event_sender.unbounded_send(MyEvent::Buttonpress).unwrap();
 
     block_on(commutator.run());
 }

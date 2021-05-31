@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
 
@@ -55,12 +54,22 @@ impl<E: Event> Commutator<E> {
         }
     }
 
-    pub fn add_handler(&mut self, handler: Box<dyn Handler<E>>) {
+    pub fn add_handler(&mut self, mut handler: Box<dyn Handler<E>>) {
         let key = &*handler as *const dyn Handler<E> as *const () as usize;
+        handler.set_event_sender(self.event_sender.clone());
         self.handlers.insert(key, handler);
     }
 
     pub fn get_handler(&mut self, key: usize) -> Option<&mut Box<dyn Handler<E>>> {
         self.handlers.get_mut(&key)
     }
+
+    pub fn publish(&mut self, event: E) {
+        let envelope = Envelope {
+            destination: Destination::All,
+            event: event
+        };
+        self.event_sender.unbounded_send(envelope).unwrap();
+    }
+
 }
