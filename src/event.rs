@@ -8,7 +8,7 @@ pub struct Envelope<E: Event> {
     pub event: E
 }
 
-pub trait Event {
+pub trait Event: Copy {
 
     fn get_exit_event() -> Self;
 

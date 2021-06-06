@@ -1,5 +1,6 @@
 use futures::channel::mpsc;
 use armature::stator::*;
+use armature::event::*;
 
 use crate::DPEvent;
 
@@ -11,18 +12,66 @@ pub enum ForkState {
 }
 
 pub struct Table {
-    event_sender: mpsc::UnboundedSender<DPEvent>,
+    id: Option<usize>,
+    state: State<Self, DPEvent>,
+    event_sender: Option<mpsc::UnboundedSender<Envelope<DPEvent>>>,
     count: usize,
     fork: Vec<ForkState>,
     is_hungry: Vec<bool>,
     stopped_number: usize
 }
 
+impl Handler<DPEvent> for Table {
+
+    fn init(&mut self) {
+        Stator::init(self);
+    }
+
+    fn handle(&mut self, event: &DPEvent) {
+        Stator::handle(self, event);
+    }
+
+    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<DPEvent>>) {
+        Stator::set_event_sender(self, event_sender);
+    }
+
+    fn set_id(&mut self, id: usize) {
+        self.id = Some(id);
+    }
+
+}
+
+impl Stator<DPEvent> for Table {
+
+    fn get_id(&self) -> Option<usize> {
+        self.id
+    }
+
+    fn get_state(&mut self) -> State<Self, DPEvent> {
+        self.state
+    }
+
+    fn set_state(&mut self, state: State<Self, DPEvent>) {
+        self.state = state
+    }
+
+    fn get_event_sender(&mut self) -> &mut Option<mpsc::UnboundedSender<Envelope<DPEvent>>> {
+        &mut self.event_sender
+    }
+
+    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<DPEvent>>) {
+        self.event_sender = Some(event_sender);
+    }
+
+}
+
 impl Table {
 
-    pub fn new(sender: mpsc::UnboundedSender<DPEvent>, count: usize) -> Self {
+    pub fn new(count: usize) -> Self {
         Self {
-            event_sender: sender,
+            id: None,
+            state: Self::serving,
+            event_sender: None,
             count: count,
             fork: vec![ForkState::Free; count],
             is_hungry: vec![false; count],
@@ -47,7 +96,7 @@ impl Table {
                 if let (ForkState::UsedLeft, ForkState::Free) = (self.fork[m], self.fork[n]) {
                     self.fork[m] = ForkState::UsedLeft;
                     self.fork[n] = ForkState::UsedRight;
-                    self.emit(DPEvent::Eat(n));
+                    self.publish(DPEvent::Eat(n));
                 } else {
                     self.is_hungry[n] = true;
                 }
@@ -63,13 +112,13 @@ impl Table {
                     self.fork[n] = ForkState::UsedLeft;
                     self.fork[neighbor] = ForkState::UsedLeft;
                     self.is_hungry[neighbor] = false;
-                    self.emit(DPEvent::Eat(neighbor));
+                    self.publish(DPEvent::Eat(neighbor));
                 }
                 if let (true, ForkState::Free) = (self.is_hungry[neighbor], self.fork[self.left(neighbor)]) {
                     self.fork[self.left(neighbor)] = ForkState::UsedLeft;
                     self.fork[neighbor] = ForkState::UsedRight;
                     self.is_hungry[neighbor] = false;
-                    self.emit(DPEvent::Eat(neighbor));
+                    self.publish(DPEvent::Eat(neighbor));
                 }
                 Response::Handled
             }
@@ -77,7 +126,7 @@ impl Table {
             DPEvent::Stop(n) => {
                 self.stopped_number += 1;
                 if self.stopped_number == self.count {
-                    self.emit(DPEvent::Terminate)
+                    self.publish(DPEvent::Terminate)
                 }
                 Response::Handled
             }
@@ -129,12 +178,4 @@ impl Philosopher {
     pub fn root(&mut self, event: &DPEvent) -> Response<Self, DPEvent> {
         Response::Handled
     }
-}
-
-impl Emitter<DPEvent> for Table {
-
-    fn get_sender(&mut self) -> &mut mpsc::UnboundedSender<DPEvent> {
-        &mut self.event_sender
-    }
-
 }

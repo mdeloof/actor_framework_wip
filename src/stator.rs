@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use futures::channel::mpsc;
 use crate::event::*;
 
@@ -20,10 +21,14 @@ pub trait Handler<E: Event> {
 
     fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<E>>);
 
+    fn set_id(&mut self, id: usize);
+
 }
 
 
 pub trait Stator<E: Event>: Sized {
+
+    fn get_id(&self) -> Option<usize>;
 
     fn get_state(&mut self) -> State<Self, E>;
 
@@ -32,6 +37,8 @@ pub trait Stator<E: Event>: Sized {
     fn get_event_sender(&mut self) -> &mut Option<mpsc::UnboundedSender<Envelope<E>>>;
 
     fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<E>>);
+
+    fn get_defered_event_queue(&mut self) -> &mut VecDeque<E>;
 
     fn get_parent_state(&mut self, state: State<Self, E>) -> Result<State<Self, E>, &str> {
         let nop_event = E::get_nop_event();
@@ -123,7 +130,7 @@ pub trait Stator<E: Event>: Sized {
                 // the path. But if this is also the last state in both 
                 // paths that means we're dealing with a self-transition. 
                 // In that case we keep this state in the entry and exit 
-                // paths and break out of the loop.
+                // paths, and break out of the loop.
                 if entry_path.len() == 1 && exit_path.len() == 1 {
                     break;
                 } else {
@@ -158,6 +165,7 @@ pub trait Stator<E: Event>: Sized {
         self.set_state(target);
     }
 
+    /// Publish an event to all handlers.
     fn publish(&mut self, event: E) {
         if let Some(event_sender) = self.get_event_sender() {
             let envelope = Envelope {
@@ -167,4 +175,59 @@ pub trait Stator<E: Event>: Sized {
             event_sender.unbounded_send(envelope).unwrap(); 
         }
     }
+
+    /// Post an event to a specific handler.
+    fn post(&mut self, event: E, handler_id: usize) {
+        if let Some(event_sender) = self.get_event_sender() {
+            let envelope = Envelope {
+                destination: Destination::Single(handler_id),
+                event: event
+            };
+            event_sender.unbounded_send(envelope).unwrap();
+        }
+    }
+
+    /// Post an event to self.
+    fn post_to_self(&mut self, event: E) {
+        let id = self.get_id().expect(
+            "Stator must be attached to commutator");
+        self.post(event, id);
+    }
+
+    /// Defer an event for the moment so you can recall it later.
+    fn defer(&mut self, event: &E) {
+        let queue = self.get_defered_event_queue();
+        queue.push_back(*event);
+    }
+
+    /// Recall all events that had been defered.
+    fn recall_all(&mut self) {
+        let queue = self.get_defered_event_queue();
+        for event in queue.pop_front() {
+            self.post_to_self(event);
+        }
+    }
+
+    /// Recall the event that is in the front of the defered event queue.
+    fn recall_front(&mut self) {
+        let queue = self.get_defered_event_queue();
+        if let Some(event) = queue.pop_front() {
+            self.post_to_self(event);
+        }
+    }
+
+    /// Recall the event that is in the back of the defered event queue.
+    fn recall_back(&mut self) {
+        let queue = self.get_defered_event_queue();
+        if let Some(event) = queue.pop_back() {
+            self.post_to_self(event);
+        }
+    }
+
+    /// Clear all the events from the defered event queue.
+    fn clear_defered(&mut self) {
+        let queue = self.get_defered_event_queue();
+        queue.clear();
+    }
+
 }
