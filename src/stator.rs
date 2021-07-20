@@ -1,59 +1,52 @@
-use std::collections::VecDeque;
-use futures::channel::mpsc;
-use crate::event::*;
+use std::collections::{VecDeque};
+use std::fmt;
 
+use crate::event::*;
+use crate::sender::*;
+use crate::handler::*;
+
+// The max depth states can be nested inside each other.
 const MAX_DEPTH: usize = 16;
 
-pub type State<A, E> = fn(&mut A , &E) -> Response<A, E>;
+// Type alias for the signature of a state handler function.
+pub type State<T, E> = fn(&mut T , &E) -> Response<T, E>;
 
-pub enum Response<A, E: Event> {
+pub enum Response<A, E: IsEvent> {
     Handled,
     Parent(State<A, E>),
     Transition(State<A, E>)
 }
 
+pub trait Stator: Sender + Handler + Sized + Send {
 
-pub trait Handler<E: Event> {
+    // The initial state of the stator.
+    const INIT: State<Self, Self::Event>;
 
-    fn init(&mut self);
+    /// Get a mutable reference to the stator component.
+    fn get_stator_component_mut(&mut self) -> &mut StatorComponent<Self, Self::Event>;
 
-    fn handle(&mut self, event: &E);
+    /// Get a immutable reference to the stator component.
+    fn get_stator_component(&self) -> &StatorComponent<Self, Self::Event>;
 
-    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<E>>);
-
-    fn set_id(&mut self, id: usize);
-
-}
-
-
-pub trait Stator<E: Event>: Sized {
-
-    fn get_id(&self) -> Option<usize>;
-
-    fn get_state(&mut self) -> State<Self, E>;
-
-    fn set_state(&mut self, state: State<Self, E>);
-
-    fn get_event_sender(&mut self) -> &mut Option<mpsc::UnboundedSender<Envelope<E>>>;
-
-    fn set_event_sender(&mut self, event_sender: mpsc::UnboundedSender<Envelope<E>>);
-
-    fn get_defered_event_queue(&mut self) -> &mut VecDeque<E>;
-
-    fn get_parent_state(&mut self, state: State<Self, E>) -> Result<State<Self, E>, &str> {
-        let nop_event = E::get_nop_event();
+    /// Get the parent state of a given state. If a state has no parent
+    /// state (most likely because it is the root state) the result will 
+    /// be an error.
+    fn get_parent_state(&mut self, state: State<Self, Self::Event>) -> Option<State<Self, Self::Event>> {
+        let nop_event = Self::Event::new_nop_event();
         return match state(self, &nop_event) {
-            Response::Parent(state) => Ok(state),
-            _ => Err("root state has no parent state")
+            Response::Parent(state) => Some(state),
+            _ => None
         }
     }
 
-    fn handle(&mut self, event: &E) {
-        let state = self.get_state();
-        self.call_handler(state, event)
+    /// Handle an event from within the current state.
+    fn handle(&mut self, event: &Self::Event) {
+        let state = self.get_stator_component_mut().state;
+        self.call_handler(state, event);
     }
 
-    fn call_handler(&mut self, handler: State<Self, E>, event: &E) {
+    /// Handle an event from a given state.
+    fn call_handler(&mut self, handler: State<Self, Self::Event>, event: &Self::Event) {
         match handler(self, event) {
             Response::Transition(target_state) => self.transition(target_state),
             Response::Parent(parent_state) => self.call_handler(parent_state, event),
@@ -61,29 +54,44 @@ pub trait Stator<E: Event>: Sized {
         }
     }
 
+    /// Perform the transition into the initial state starting from the 
+    /// root state.
     fn init(&mut self) {
-        let mut entry_path: Vec<State<Self, E>> = Vec::with_capacity(MAX_DEPTH);
+        let mut entry_path: Vec<State<Self, Self::Event>> = Vec::with_capacity(MAX_DEPTH);
 
-        let mut entry_temp = self.get_state();
+        let mut entry_temp = self.get_stator_component_mut().state;
 
         // Get the path from the initial state to the root state
         for i in 0..(MAX_DEPTH + 1) {
             entry_path.push(entry_temp);
             match self.get_parent_state(entry_temp) {
-                Ok(parent_state) => entry_temp = parent_state,
+                Some(parent_state) => entry_temp = parent_state,
                 // Reached the top state
-                Err(_) => break
+                None => break
             }
             if i == MAX_DEPTH {
                 panic!("Reached max state nesting depth of {}", MAX_DEPTH)
             }
         }
+
+        // Execute the entry path into the target state
+        let entry_event = Self::Event::new_entry_event();
+        for entry_state in entry_path.into_iter().rev() {
+            match entry_state(self, &entry_event) {
+                Response::Handled => {},
+                Response::Transition(_) => panic!(
+                    "Do not perform transition on entry event."),
+                _ => {}
+            }
+        }
     }
 
-    fn transition(&mut self, target: State<Self, E>) {
-        let mut exit_path: Vec<State<Self, E>> = Vec::with_capacity(MAX_DEPTH);
-        let mut entry_path: Vec<State<Self, E>> = Vec::with_capacity(MAX_DEPTH);
-        let source = self.get_state();
+    /// Perform a transition from the current state towards the target
+    /// state.
+    fn transition(&mut self, target: State<Self, Self::Event>) {
+        let mut exit_path: Vec<State<Self, Self::Event>> = Vec::with_capacity(MAX_DEPTH);
+        let mut entry_path: Vec<State<Self, Self::Event>> = Vec::with_capacity(MAX_DEPTH);
+        let source = self.get_stator_component_mut().state;
 
         let mut exit_temp = source;
         let mut entry_temp = target;
@@ -92,9 +100,9 @@ pub trait Stator<E: Event>: Sized {
         for i in 0..(MAX_DEPTH + 1) {
             exit_path.push(exit_temp);
             match self.get_parent_state(exit_temp) {
-                Ok(parent_state) => exit_temp = parent_state,
+                Some(parent_state) => exit_temp = parent_state,
                 // Reached the top state
-                Err(_) => break
+                None => break
             }
             assert_ne!(i, MAX_DEPTH, "Reached max state nesting depth of {}", MAX_DEPTH);
         }
@@ -103,9 +111,9 @@ pub trait Stator<E: Event>: Sized {
         for i in 0..(MAX_DEPTH + 1) {
             entry_path.push(entry_temp);
             match self.get_parent_state(entry_temp) {
-                Ok(parent_state) => entry_temp = parent_state,
+                Some(parent_state) => entry_temp = parent_state,
                 // Reached the top state
-                Err(_) => break
+                None => break
             }
             assert_ne!(i, MAX_DEPTH, "Reached max state nesting depth of {}", MAX_DEPTH);
         }
@@ -142,7 +150,7 @@ pub trait Stator<E: Event>: Sized {
         }
 
         // Execute the exit path out of the source state
-        let exit_event = E::get_exit_event();
+        let exit_event = Self::Event::new_exit_event();
         for exit_state in exit_path.into_iter() {
             match exit_state(self, &exit_event) {
                 Response::Handled => {},
@@ -153,7 +161,7 @@ pub trait Stator<E: Event>: Sized {
         }
 
         // Execute the entry path into the target state
-        let entry_event = E::get_entry_event();
+        let entry_event = Self::Event::new_entry_event();
         for entry_state in entry_path.into_iter().rev() {
             match entry_state(self, &entry_event) {
                 Response::Handled => {},
@@ -162,47 +170,18 @@ pub trait Stator<E: Event>: Sized {
                 _ => {}
             }
         }
-        self.set_state(target);
-    }
-
-    /// Publish an event to all handlers.
-    fn publish(&mut self, event: E) {
-        if let Some(event_sender) = self.get_event_sender() {
-            let envelope = Envelope {
-                destination: Destination::All,
-                event: event
-            };
-            event_sender.unbounded_send(envelope).unwrap(); 
-        }
-    }
-
-    /// Post an event to a specific handler.
-    fn post(&mut self, event: E, handler_id: usize) {
-        if let Some(event_sender) = self.get_event_sender() {
-            let envelope = Envelope {
-                destination: Destination::Single(handler_id),
-                event: event
-            };
-            event_sender.unbounded_send(envelope).unwrap();
-        }
-    }
-
-    /// Post an event to self.
-    fn post_to_self(&mut self, event: E) {
-        let id = self.get_id().expect(
-            "Stator must be attached to commutator");
-        self.post(event, id);
+        self.get_stator_component_mut().state = target;
     }
 
     /// Defer an event for the moment so you can recall it later.
-    fn defer(&mut self, event: &E) {
-        let queue = self.get_defered_event_queue();
-        queue.push_back(*event);
+    fn defer(&mut self, event: &Self::Event) {
+        let queue = &mut self.get_stator_component_mut().defered_event_queue;
+        queue.push_back(event.clone());
     }
 
     /// Recall all events that had been defered.
     fn recall_all(&mut self) {
-        let queue = self.get_defered_event_queue();
+        let queue = &mut self.get_stator_component_mut().defered_event_queue;
         for event in queue.pop_front() {
             self.post_to_self(event);
         }
@@ -210,7 +189,7 @@ pub trait Stator<E: Event>: Sized {
 
     /// Recall the event that is in the front of the defered event queue.
     fn recall_front(&mut self) {
-        let queue = self.get_defered_event_queue();
+        let queue = &mut self.get_stator_component_mut().defered_event_queue;
         if let Some(event) = queue.pop_front() {
             self.post_to_self(event);
         }
@@ -218,7 +197,7 @@ pub trait Stator<E: Event>: Sized {
 
     /// Recall the event that is in the back of the defered event queue.
     fn recall_back(&mut self) {
-        let queue = self.get_defered_event_queue();
+        let queue = &mut self.get_stator_component_mut().defered_event_queue;
         if let Some(event) = queue.pop_back() {
             self.post_to_self(event);
         }
@@ -226,8 +205,53 @@ pub trait Stator<E: Event>: Sized {
 
     /// Clear all the events from the defered event queue.
     fn clear_defered(&mut self) {
-        let queue = self.get_defered_event_queue();
+        let queue = &mut self.get_stator_component_mut().defered_event_queue;
         queue.clear();
     }
 
+}
+
+pub struct StatorComponent<T, E>
+where 
+T: Stator<Event = E>,
+E: IsEvent<Event = E> {
+    state: State<T, E>,
+    defered_event_queue: VecDeque<E>
+}
+
+impl<T, E> Default for StatorComponent<T, E>
+where
+T: Stator<Event = E>,
+E: IsEvent<Event = E> {
+
+    fn default() -> Self {
+        Self {
+            state: T::INIT,
+            defered_event_queue: VecDeque::new()
+        }
+    }
+}
+
+impl<T, E> Clone for StatorComponent<T, E> 
+where
+T: Stator<Event = E>,
+E: IsEvent<Event = E> {
+
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state,
+            defered_event_queue: self.defered_event_queue.clone()
+        }
+    }
+
+}
+
+impl<T, E > fmt::Debug for StatorComponent<T, E > 
+where
+T: Stator<Event = E>,
+E: IsEvent<Event = E> {
+
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "StatorComponent")
+    }
 }
