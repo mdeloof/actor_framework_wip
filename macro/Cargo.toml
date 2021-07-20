@@ -5,6 +5,7 @@ authors = ["Maxim <MaximDeloof@users.noreply.github.com>"]
 edition = "2018"
 license = "MIT"
 repository = "https://github.com/MaximDeloof/armature"
+description = "Macros for `armature` crate."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,5 +13,5 @@ repository = "https://github.com/MaximDeloof/armature"
 proc-macro = true
 
 [dependencies]
-syn = { version = "1.0", features = ["full", "extra-traits"] }
+syn = { version = "1.0", features = ["full", "extra-traits", "visit"] }
 quote = "1.0"
