@@ -322,8 +322,16 @@ impl<'ast> Visit<'ast> for EventVariantsMatchArmVisitor<'ast> {
                     }
                 }
             }
+            syn::Pat::Struct(pat_struct) => {
+                let event_ident = &pat_struct.path.segments[1].ident;
+                match event_ident.to_string().as_str() {
+                    _ => {
+                        self.events.insert(event_ident);
+                    }
+                }
+            }
             syn::Pat::Wild(_) => {}
-            _ => todo!("Implement additional match types.")
+            _ => todo!("Implement additional match types: {:#?}", &node.pat)
         }
     }
 }

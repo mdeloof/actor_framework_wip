@@ -1,6 +1,6 @@
 # Armature
 
-Armature is an event-driven stateful actor framework for Rust.
+Armature is an event-driven stateful actor framework for Rust, enabling you to design complex systems that are easy to reaseon about
 
 ## What does that mean?
 
