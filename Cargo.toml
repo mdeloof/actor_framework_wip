@@ -1,6 +1,6 @@
 [package]
 name = "armature"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Maxim <MaximDeloof@users.noreply.github.com>"]
 edition = "2018"
 license = "MIT"
@@ -9,11 +9,10 @@ repository = "https://github.com/MaximDeloof/armature"
 readme = "README.md"
 
 
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 armature-macro = { path = "./macro" }
 futures = "0.3"
 async-std = "1.9"
-
+log = "0.4"

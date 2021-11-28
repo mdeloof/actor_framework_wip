@@ -1,27 +1,38 @@
-use crate::event::*;
-use crate::sender::*;
-use std::time::Duration;
-use std::fmt;
-use futures::future::{AbortHandle, Abortable};
+use crate::message::*;
+use crate::{Publisher, Sender};
 use async_std::task;
+use futures::future::{AbortHandle, Abortable};
+use std::fmt;
+use std::time::Duration;
 
-
-#[derive(Clone)]
-pub struct Timer<E: IsEvent<Event = E>> {
-    sender_component: SenderComponent<E>,
+pub struct Timer<E: Message> {
+    sender: Option<Sender<E>>,
+    _id: Option<usize>,
     abort_handle: Option<AbortHandle>,
     pub duration: Duration,
-    pub on_elapsed: fn(&SenderComponent<E>)
+    pub on_elapsed: fn(&Self),
 }
 
-impl<E: IsEvent<Event = E>> Timer<E> {
+impl<E: Message> Clone for Timer<E> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            _id: self._id.clone(),
+            abort_handle: self.abort_handle.clone(),
+            duration: self.duration.clone(),
+            on_elapsed: self.on_elapsed.clone(),
+        }
+    }
+}
 
+impl<E: Message + 'static> Timer<E> {
     pub fn new(duration: Duration) -> Self {
         Self {
-            sender_component: Default::default(),
+            sender: None,
+            _id: None,
             abort_handle: None,
             duration,
-            on_elapsed: |_this| {}
+            on_elapsed: |_this| {},
         }
     }
 
@@ -29,15 +40,11 @@ impl<E: IsEvent<Event = E>> Timer<E> {
     pub fn start(&mut self) {
         // Cancel the timer if was already running
         self.cancel();
-        // Create new variables that will be moved into the future
-        let duration = self.duration;
-        let on_elapsed = self.on_elapsed;
-        let sender_component = self.get_sender_component().clone();
+        let this = self.clone();
         // Create the future
         let task = async move {
-            let test = sender_component;
-            task::sleep(duration).await;
-            on_elapsed(&test);
+            task::sleep(this.duration).await;
+            (this.on_elapsed)(&this);
         };
         // We want to be able to abort the future
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
@@ -50,15 +57,11 @@ impl<E: IsEvent<Event = E>> Timer<E> {
     pub fn start_interval(&mut self) {
         // Cancel the timer if was already running
         self.cancel();
-        // Create new variables that will be moved into the future
-        let duration = self.duration;
-        let on_elapsed = self.on_elapsed;
-        let sender_component = self.get_sender_component().clone();
+        let this = self.clone();
         task::spawn(async move {
-            let sender_component = sender_component.clone();
             loop {
-                task::sleep(duration).await;
-                on_elapsed(&sender_component);
+                task::sleep(this.duration).await;
+                (this.on_elapsed)(&this);
             }
         });
     }
@@ -69,39 +72,38 @@ impl<E: IsEvent<Event = E>> Timer<E> {
             abort_handle.abort();
         }
     }
-
 }
 
-impl<E: IsEvent<Event = E>> Sender for Timer<E> {
-    type Event = E;
+impl<E> Publisher for Timer<E>
+where
+    E: Message,
+{
+    type Message = E;
 
-    fn get_sender_component_mut(&mut self) -> &mut SenderComponent<Self::Event> {
-        &mut self.sender_component
-    }
-
-    fn get_sender_component(&self) -> &SenderComponent<Self::Event> {
-        &self.sender_component
-    }
-
-}
-
-impl<E: IsEvent<Event = E>> Default for Timer<E> {
-
-    fn default() -> Self {
-        Self {
-            sender_component: Default::default(),
-            abort_handle: None,
-            duration: Duration::from_secs(1),
-            on_elapsed: |_this| {}
+    fn sender(&self) -> &Sender<E> {
+        match &self.sender {
+            Some(sender) => sender,
+            None => panic!(),
         }
     }
 }
 
-impl<E: IsEvent<Event = E>> fmt::Debug for Timer<E> {
+impl<E: Message> Default for Timer<E> {
+    fn default() -> Self {
+        Self {
+            sender: None,
+            _id: None,
+            abort_handle: None,
+            duration: Duration::from_secs(1),
+            on_elapsed: |_this| {},
+        }
+    }
+}
 
+impl<E: Message> fmt::Debug for Timer<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.debug_struct("Timer")
-         .field("duration", &self.duration)
-         .finish()
+            .field("duration", &self.duration)
+            .finish()
     }
 }
