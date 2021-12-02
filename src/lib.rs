@@ -16,7 +16,7 @@ mod store;
 pub mod utils;
 
 pub use actor::{Actor, ActorObject};
-pub use commutator::{Commutator, Receiver, Sender};
+pub use commutator::{Commutator, InterceptResult, Interceptor, Receiver, Sender};
 pub use message::{Destination, Envelope, Message, MessageType, Origin};
 pub use publisher::{DeputyPublisher, Publisher};
 

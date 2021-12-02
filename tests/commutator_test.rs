@@ -2,6 +2,7 @@
 mod tests {
 
     use armature;
+    use armature::commutator::InterceptResult;
     use armature::Actor;
     use armature::MessageType;
     use armature::{Commutator, Sender};
@@ -19,24 +20,10 @@ mod tests {
 
     impl armature::Message for Event {
         type MessageType = Signal;
-
-        fn match_detach_message(self) -> Option<usize> {
-            match self {
-                Self::Detach(id) => Some(id),
-                _ => None,
-            }
-        }
     }
 
     impl armature::MessageType for Signal {
         type Message = Event;
-
-        fn is_detach_sig(&self) -> bool {
-            match self {
-                Signal::Detach => true,
-                _ => false,
-            }
-        }
     }
 
     #[derive(Clone, Default, Debug)]
@@ -98,6 +85,18 @@ mod tests {
         let l3 = Listener::default();
 
         let mut commutator = Commutator::new();
+
+        commutator.set_interceptor(|commutator, message| match message {
+            Event::Detach(id) => {
+                commutator.detach(id);
+                if commutator.handlers().iter().count() == 0 {
+                    InterceptResult::Break
+                } else {
+                    InterceptResult::Interception
+                }
+            }
+            _ => InterceptResult::Pass(message),
+        });
 
         commutator.attach(Box::new(l1));
         commutator.attach(Box::new(l2));
